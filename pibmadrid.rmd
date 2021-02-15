@@ -1,0 +1,384 @@
+---
+title: "Trabajo PIBMadrid - Técnicas de Clasificación"
+author: "Daniel Corral, Antonio Pascual, Diego Senso"
+date: "03/12/2020"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: '3'
+---
+
+# Objetivo
+
+El objetivo del presente informe es estudiar el PIB per cápita de los diferentes municipios de Madrid, convirtiéndo este valor en una variable categórica (mediante la discretización por cuartiles) y tratando de clasificarla según diferentes modelos a estimar.
+
+En primer lugar, se cargan las librerías necesarias para el estudio:
+
+```{r setup, include=FALSE}
+library(skimr)
+library(dplyr)
+library(reactR)
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(janitor) 
+library(skimr) 
+library(magrittr)
+library(corrplot) 
+library(ggcorrplot) 
+library(PerformanceAnalytics)
+library(leaps) 
+library(MASS)
+library(dplyr)
+library(knitr)
+library(tidyr)
+library(rpart)
+library(rpart.plot)
+library(klaR)
+library(Deducer)
+library(rJava)
+library(e1071)
+
+```
+
+# Carga y tratamiento del dataset
+
+Se procede a cargar el dataset y se elimina la columna de "municipios", pues no será relevante para el estudio posterior.
+
+```{r}
+#Carga del dataset
+pibmadrid <- read.csv("pibmadrid.csv", sep = ";")
+
+str(pibmadrid)
+
+#Eliminación de la columna municipios
+pibmadrid <- pibmadrid[,-1]
+```
+
+# Diccionario de variables
+
+El dataset con el que se va a trabajar ha sido creado desde un inicio acudiendo a datos publicados por el Instituto de Estadística de la Comunidad de Madrid. Para conformar los datos, se ha seleccionado la variable a explicar (el PIB per cápita de cada municipio de la Comunidad de Madrid) y una serie de variables que se ha considerado que podrían ser importantes para estudiar su evolución. 
+
+Así pues, el dataset "pibmadrid" cuenta con un total de 179 observaciones en las que cada una de ellas representa una combinación de datos para ese municipio acerca de diferentes cuestiones.
+
+Las variables con las que cuenta el dataset son las siguientes:
+
+- **municipio**: el nombre del municipio en cuestión. Se ha eliminado esta variable al inicio pues no va a ser relevante para el análisis.
+- **pib_percapita**: el dato del PIB per cápita de cada municipio de la Comunidad de Madrid, expresado en euros.
+-	**empadronados**: número de personas empadronadas en el municipio en cuestión.
+- **paro**: número de parados del municipio por cada 1000 habitantes.	
+- **afiliados**: número de afiliados a la Seguridad Social por cada 1000 habitantes.
+- **declaraciones**: número de delcaraciones de la renta producidas en ese municipio.
+- **catastro**: valor catastral por unidad urbana. Se calcula con la división del valor catastral urbano entre las unidades urbanas.
+- **turismos**: número de vehículos que poseen los habitantes de ese municipio por cada 1000 habitantes.
+- **distancia_capital**: kilómetros de distancia entre el municipio y la ciudad de Madrid.
+- **agricultura**: porcentaje de personas del municipio dedicados al sector de la agricultura del total de ocupados.
+- **energia**: porcentaje de personas del municipio dedicados al sector de la energía del total de ocupados.
+- **construccion**: : porcentaje de personas del municipio dedicados al sector de la construcción del total de ocupados.
+- **hosteleria**: porcentaje de personas del municipio dedicados al sector de la hostelería del total de ocupados.
+- **finanzas**: porcentaje de personas del municipio dedicados al sector de las finanzas del total de ocupados. 
+- **otros**: porcentaje de personas del municipio dedicados a otros sectores del total de ocupados.
+- **natalidad**: nacimientos por cada 1000 habitantes.
+
+
+# Observación del dataset (y de la variable a predecir)
+
+Realizamos una primera aproximación al dataset mediante la función "summary" para ganar una idea de cuál es el comportamiento de las diferentes variables. Además observamos gráficamente la variable a estudiar mediante un histograma.
+
+```{r pressure, echo=FALSE}
+summary(pibmadrid)
+
+hist(pibmadrid$pib_percapita, main = ("Histograma PIB per cápita - C.Madrid"), 
+     xlab = "PIB per cápita", 
+     ylab = "Frecuencia", 
+     col = "red", 
+     border = "white")
+```
+
+Como se puede observar, el PIB per cápita más repetido se encuentra entre los 10.000 y los 20.000, seguido del intervalo entre 20.000 y 30.000.
+
+# Discretización del PIB per cápita por cuartiles
+
+Para estudiar la variable y poder clasificarla con algunos de los modelos, se sacan los cuartiles de la variable "pib_percapita". Según esos valores se creará una nueva columna ("pib_categ") con las categorías de 1 a 4. 
+
+```{r}
+#Cuantiles
+quantile(pibmadrid$pib_percapita)
+
+#Creación de nueva columna y cambio de números de categorías
+pibmadrid[,'pib_categ'] <- cut(pibmadrid$pib_percapita, breaks = c(7333.9, 14234.5, 19288.0, 27492.0, 83698.0), labels = c("1", "2", "3", "4"))
+
+```
+
+## Creación del set de entrenamiento y test
+
+Procedemos a crear el set de entrenamiento y el de test para ver la calidad de los modelos que posteriormente configuraremos. Seleccionamos que la parte de entrenamiento será del 80%, mientras que la del test un 20% del total de la muestra.
+
+```{r}
+set.seed(123)
+entrenamiento <- sample(x = nrow(pibmadrid), size = nrow(pibmadrid)*0.8, replace = FALSE)
+
+# Subgrupo de datos de entrenamiento
+train <- pibmadrid[entrenamiento,]
+
+# Subgrupo de datos de test
+test <- pibmadrid[-entrenamiento,]
+```
+
+
+## Modelo de regresión lineal
+
+Pasando a la configuración de modelos, en primer lugar se ha decidido realizar un simple modelo de regresión lineal con el fin de observar cuáles de las variables son buenas para explicar la Y (aún en euros).
+
+```{r}
+modelo_lineal <- lm(pib_percapita ~. -pib_categ, data = pibmadrid)
+summary(modelo_lineal)
+```
+
+A continuación y habiendo observado los resultados, se contrasta con stepAIC la mejor combinación de variables:
+
+```{r results='hide'}
+stepAIC(modelo_lineal, direction = "both")
+```
+
+Creamos un modelo con la configuración derivada por el contraste stepAIC.
+
+```{r}
+modelo_lineal2 <- lm(pib_percapita ~ empadronados + afiliados + declaraciones + 
+    turismos + distancia_capital + energia + finanzas + natalidad, data = train)
+summary(modelo_lineal2)
+```
+
+No existen unas grandes diferencias. El R ajustado asciende aunque no es un aumento demasiado significativo. Por otro lado, las variables que antes tenían calidad explicativa parecen conservarla.
+
+
+## Modelo LDA
+
+A partir de aquí, trabajamos ya con el PIB per cápita en formato categórico (valores de 1 a 4). Para predecir esta variable acudimos al modelo LDA. Se ha escogido introducir todas las variables iniciales pues pese a que el stepAIC sugería una configuración diferente, la mejoría del modelo era poco reseñable y se han incluido todas las variables para evitar acometer así una posible pérdida de información.
+
+```{r}
+#Estimación del modelo
+modelLDA <- lda(pib_categ ~. -pib_percapita, data=train)
+modelLDA
+
+##Gráfico
+plot(modelLDA, pch=16, col = c("red","blue", "chocolate3", "black")[pibmadrid$pib_categ])
+
+# Prediccion respuesta
+ldaResult <- predict(modelLDA, newdata = test)
+
+# Matriz de confusion
+tldamod <- table(ldaResult$class, test$pib_categ)
+tldamod
+
+# Precision
+sum(diag(tldamod))/sum(tldamod)*100 #Precisión
+
+# Gráficos de partición (por separado para reducir tiempos de computación)
+#library(klaR)
+#partimat(pibmadrid[,1:5],pibmadrid$pib_categ,data=pibmadrid,method="lda",main="Gráficos de partición")
+#partimat(pibmadrid[,6:9],pibmadrid$pib_categ,data=pibmadrid,method="lda",main="Gráficos de partición")
+#partimat(pibmadrid[,10:15],pibmadrid$pib_categ,data=pibmadrid,method="lda",main="Gráficos de partición")
+```
+
+A juzgar por los resultados, la precisión del modelo es reducida. No logra clasificar correctamente muchas de las observaciones dentro de cada uno de los cuatro grupos.
+
+## Modelo QDA
+
+La misma variable categórica la pasamos a predecir con el modelo QDA.
+
+```{r}
+
+modelQDA <- qda(pib_categ ~. -pib_percapita, data=train)
+modelQDA
+
+# Prediccion respuesta
+qdaResult <- predict(modelQDA, newdata = test)
+
+# Matriz de confusion
+tqdamod <- table(qdaResult$class, test$pib_categ)
+tqdamod
+
+# Precisión
+sum(diag(tqdamod))/sum(tqdamod)*100 # Precisión (41,67 %)
+
+#Gráficos de partición
+#partimat(pibmadrid[,1:5],pibmadrid$pib_categ,data=pibmadrid,method="qda",main="Gráficos de partición")
+#partimat(pibmadrid[,6:9],pibmadrid$pib_categ,data=pibmadrid,method="qda",main="Gráficos de partición")
+#partimat(pibmadrid[,10:15],pibmadrid$pib_categ,data=pibmadrid,method="qda",main="Gráficos de partición")
+```
+
+El porcentaje de acierto es algo inferior al del modelo LDA. Seguimos sacando la conclusión de que al tener que acertar entre cuatro valores de la categórica, el modelo tiene un acierto bastante pequeño. Por ello, en el siguiente apartado realizaremos los modelos para una variable de dos valores posibles.
+
+# PIBMadrid como categórica de valores 0 y 1
+
+Dada la baja precisión que hemos obtenido en los modelos anteriores, hemos decidido crear una nueva columna (pib_categ2) para separar el PIB en dos grupos. De esta forma, podemos contrastar si los resultados anteriores son debidos a la mala calidad de los modelos, o que estos no eran suficientemente buenos como para actuar ante una categórica de cuatro valores. Adicionalmente, este cambio nos permite acometer otros contrastes, como la regresión logística.
+
+```{r}
+#Creación de una nueva columna con valores 0 y 1 según el PIB per cápita
+pibmadrid[,'pib_categ2'] <- cut(pibmadrid$pib_percapita, breaks = c(7333.9, 19287.0, 83698.0), labels = c("0","1"))
+```
+
+Configuramos de nuevo la muestra de entrenamiento y de test.
+
+```{r}
+#Se selecciona una muestra aleatoria y se selecciona el 80% para el entrenamiento.
+set.seed(123)
+entrenamiento <- sample(x = nrow(pibmadrid), size = nrow(pibmadrid)*0.8, replace = FALSE)
+
+# Subgrupo de datos de entrenamiento
+train <- pibmadrid[entrenamiento,]
+
+# Subgrupo de datos de test
+test <- pibmadrid[-entrenamiento,]
+```
+
+## Modelo de regresión logística
+
+Realizamos un modelo de regresión logística y graficamos la curva ROC. Este modelo permite la estimación de una variable categórica binaria en función de variables cuantitativas, como es nuestro caso.
+
+```{r message=FALSE, warning=FALSE}
+#Construcción del modelo
+model2 <- glm(pib_categ2 ~.-pib_percapita-pib_categ, data=pibmadrid, family = binomial(), na.action=na.omit)
+
+#Graficar la curva ROC
+rocplot(model2)
+```
+
+El valor del AUC (que asciende a 0.9081) y la gráfica nos muestran buenos resultados ya que cuanto más cerca esté el valor de 1 mayor será la calidad del modelo.
+
+
+## LDA
+
+Se repite la estimación del modelo LDA pero esta vez con la nueva categórica. 
+
+```{r message=FALSE, warning=FALSE}
+#Creación del modelo
+modelLDA2 <- lda(pib_categ2 ~. -pib_percapita-pib_categ, data=train)
+modelLDA2
+
+# Prediccion respuesta
+ldaResult <- predict(modelLDA2, newdata = test)
+
+# Matriz de confusion
+tldamod2 <- table(ldaResult$class, test$pib_categ2)
+tldamod2
+
+# Precision
+sum(diag(tldamod2))/sum(tldamod2)*100
+```
+
+Al tener que predecir ahora entre dos valores posibles, el modelo ofrece un acierto considerablemente superior que anteriormente.
+
+## QDA
+
+También pasamos a estimar un modelo discriminante cuadrático con esta nueva configuración.
+
+```{r message=FALSE, warning=FALSE}
+modelQDA2 <- qda(pib_categ2 ~. -pib_percapita-pib_categ, data=train)
+modelQDA2
+
+# Prediccion respuesta
+qdaResult <- predict(modelQDA2, newdata = test)
+
+# Matriz de confusion
+tqdamod <- table(qdaResult$class, test$pib_categ2)
+tqdamod
+
+# Precisión
+sum(diag(tqdamod))/sum(tqdamod)*100 # Precisión
+```
+
+Lo mismo ocurre con el modelo QDA, que ofrece peor resultado que el LDA pero ampliamente mejor que el QDA estimado para 4 valores de la categórica.
+
+
+## Naive-Bayes
+
+El Naive-Bayes permite clasificar en la medida que calcula la probabilidad de que la variable Y en cuestión pertenezca al valor 0 ó 1 en función del valor de cada una de las variables existentes. 
+
+```{r message=FALSE, warning=FALSE}
+#Creación del modelo
+modelo_bayes <- naiveBayes(formula= pib_categ2 ~. -pib_percapita- pib_categ, data = train)
+modelo_bayes
+
+#Predicción
+prediccion2 <- predict(modelo_bayes, newdata=test, type = "class")
+
+#Matriz de confusión
+matrizconfusion <- table(test$pib_categ2, prediccion2)
+matrizconfusion
+
+# Porcentaje de aciertos
+sum(diag(matrizconfusion))/sum(matrizconfusion)
+```
+
+En la salida de código se puede observar lo anteriormente comentado. En cuanto al acierto, ofrece un 52,78%, el cual parece mejorable.
+
+## Árboles de decisión
+
+Se ha decidido también utilizar árboles de decisión con el PIB en categórica de valores 0 y 1.
+
+```{r message=FALSE, warning=FALSE}
+#Construcción del árbol
+arbolrpart <- rpart(pib_categ2 ~. -pib_percapita -pib_categ, method = "class", data =pibmadrid)
+print(arbolrpart)
+
+# Estadisticas de resultados
+printcp(arbolrpart)
+
+# Evolución del error a medida que se incrementan los nodos
+plotcp(arbolrpart)
+
+# Forma automática de realizar la "poda"
+parbolrpart<- prune(arbolrpart, cp= arbolrpart$cptable[which.min(arbolrpart$cptable[,"xerror"]),"CP"])
+printcp(parbolrpart)
+
+#Predicción
+predrpart <- predict(parbolrpart, newdata = train, type = "class")
+
+# Matriz de confusión
+t1<-table(predrpart, train$pib_categ2)
+t1
+
+# Porcentaje de aciertos
+sum(diag(t1))/sum(t1)
+```
+
+El resultado de predecir con el árbol de decisión arroja un acierto de algo más del 83%. En otras cuestiones, se puede observar gráfica y numéricamente cuando el error comienza a ascender, que es en el paso de la rama 3 a la 4, en el que se debería realizar la "poda" para evitar que el error siga subiendo.
+
+## Support Vector Machine
+
+Por último, el SVM sirve también como método de clasficación binario. Se trata de un modelo que a través de una muestra de entrenamiento, representa los puntos de la muestra en el espacio separando las dos clases a espacios lo más separados posibles. Se ha procedido a crear dicha submuestra de entrenamiento, para posteriomente estimar el modelo y obtener la matriz de confusión y el porcentaje de precisión del modelo construido.
+
+```{r message=FALSE, warning=FALSE}
+#Creación del set de entrenamiento
+set.seed(1234)
+train<-sample(seq(length(pibmadrid$pib_categ2)), length(pibmadrid$pib_categ2)*0.80,replace=F)
+
+#Configuración del modelo SVM
+svm1 <- svm(pib_categ2~. -pib_percapita -pib_categ, data=pibmadrid, kernel="radial")
+print(svm1)
+summary(svm1)
+
+#Matriz de confusión
+t1<-table(pibmadrid$pib_categ2, svm1$fitted)
+t1
+
+#Acierto
+sum(diag(t1))/sum(t1)
+```
+
+Este último modelo ofrece más del 88% de precisión. Es el más elevado que se ha obtenido durante la elaboración de este análisis.
+
+# Conclusiones
+
+- De cara al futuro, quizá se hubieran obtenido mejores resultados al contar con datos plenamente actualizados. De la misma forma, una mayor cantidad de variables podría haber mejorado la calidad explicativa de nuestros modelos, aunque arriesgando a incluir problemas de multicolinealidad, por ejemplo. 
+ 
+- A la hora de clasificar, hemos observado claramente que es más probable obtener un mejor resultado al clasificar un PIB categórico de dos valores posibles antes que de cuatro. Es por ello, que se ha probado a trabajar de las dos formas y comparar los resultados.
+
+- A modo de resumen, el SVM y los Árboles de decisión son los que nos han ofrecido una mayor precisión (por encima del 80%). En cuanto al resto, se ha observado de forma clara que al trabajar con una variable explicada de dos valores posibles la precisión de los modelos es manifiestamente superior a cuando las categorías posibles son cuatro.
+
+
+
+
